@@ -53,8 +53,17 @@ interface Album {
   photos: Photo[];
 }
 
-// Database Config
-const VAULT_ID = new URLSearchParams(window.location.search).get('vault') || 'komunitas-memoria-global';
+// --- Database Config ---
+const getActiveVaultId = () => {
+  const urlParam = new URLSearchParams(window.location.search).get('vault');
+  if (urlParam) {
+    localStorage.setItem('memoria_active_vault', urlParam);
+    return urlParam;
+  }
+  return localStorage.getItem('memoria_active_vault') || 'komunitas-memoria-global';
+};
+
+const VAULT_ID = getActiveVaultId();
 const API_URL = `https://kvdb.io/6EExiY7S4Gv2S8w6L6w3m7/${VAULT_ID}`;
 const ADMIN_PASSWORD = "MEMORIA2024"; 
 
@@ -82,10 +91,7 @@ const SpaceBackground = () => {
 
   return (
     <div className="fixed inset-0 z-0 bg-[#020205] overflow-hidden pointer-events-none">
-      {/* Deep Galactic Gradient */}
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,_#0B0B2E_0%,_#020205_100%)]"></div>
-      
-      {/* Animated Stars */}
       {stars.map(star => (
         <div 
           key={star.id} 
@@ -100,18 +106,11 @@ const SpaceBackground = () => {
           }}
         />
       ))}
-      
-      {/* Multi-layered Nebulas */}
       <div className="absolute top-[-20%] left-[-10%] w-[80%] h-[70%] bg-indigo-600/10 blur-[150px] rounded-full mix-blend-screen animate-pulse"></div>
       <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] bg-rose-600/5 blur-[120px] rounded-full mix-blend-screen"></div>
-      <div className="absolute top-[30%] right-[20%] w-[40%] h-[40%] bg-blue-500/5 blur-[100px] rounded-full mix-blend-overlay"></div>
-
-      {/* Hero Rocket Decor */}
       <div className="absolute top-[20%] right-[10%] opacity-10 animate-float pointer-events-none">
         <Rocket className="w-24 h-24 text-white drop-shadow-[0_0_20px_rgba(255,255,255,0.3)]" />
       </div>
-
-      {/* Scanning Grid line (Visual Tech) */}
       <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.03),rgba(0,255,0,0.01),rgba(0,0,255,0.03))] bg-[length:100%_4px,3px_100%] pointer-events-none"></div>
     </div>
   );
@@ -149,7 +148,17 @@ const App = () => {
   const [albums, setAlbums] = useState<Album[]>([]);
   const [currentView, setCurrentView] = useState<'home' | 'album'>('home');
   const [activeAlbumId, setActiveAlbumId] = useState<string | null>(null);
-  const [showModal, setShowModal] = useState<{show: boolean, type: 'create' | 'edit' | 'login' | 'gate', id?: string}>({show: true, type: 'gate'});
+  
+  // FIX: Menggunakan lazy initializer untuk memeriksa sesi saat refresh
+  const [showModal, setShowModal] = useState<{show: boolean, type: 'create' | 'edit' | 'login' | 'gate', id?: string}>(() => {
+    const hasGuest = sessionStorage.getItem('isMemoriaGuest') === 'true';
+    const hasAdmin = sessionStorage.getItem('isMemoriaAdmin') === 'true';
+    if (hasGuest || hasAdmin) {
+      return { show: false, type: 'gate' };
+    }
+    return { show: true, type: 'gate' };
+  });
+
   const [inputVal, setInputVal] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
@@ -165,19 +174,26 @@ const App = () => {
   
   const [newComment, setNewComment] = useState('');
   const isSyncingRef = useRef(false);
+  const lastUpdateRef = useRef<number>(0);
 
+  // --- Database Logic ---
   const fetchFromCloud = useCallback(async (force = false) => {
+    // FIX: Jangan ambil data jika sedang sync atau baru saja update lokal (dalam 5 detik terakhir)
     if ((isSyncingRef.current || isUploading) && !force) return;
+    if (Date.now() - lastUpdateRef.current < 5000 && !force) return;
+
     setSyncStatus('syncing');
     try {
       const response = await fetch(API_URL);
       if (response.ok) {
         const data = await response.json();
-        if (!isSyncingRef.current) setAlbums(data || []);
+        // Hanya update jika data valid dan tidak sedang ada proses simpan
+        if (!isSyncingRef.current && Array.isArray(data)) {
+          setAlbums(data);
+        }
         setSyncStatus('synced');
       } else {
-        if (!isSyncingRef.current) setAlbums([]);
-        setSyncStatus('synced');
+        setSyncStatus('synced'); // Anggap synced (kosong) jika belum ada data di KV
       }
     } catch (e) {
       setSyncStatus('error');
@@ -186,15 +202,17 @@ const App = () => {
 
   const saveToCloud = async (newAlbums: Album[]) => {
     isSyncingRef.current = true;
+    lastUpdateRef.current = Date.now();
     setSyncStatus('syncing');
     try {
       const res = await fetch(API_URL, {
         method: 'POST',
         body: JSON.stringify(newAlbums),
       });
-      if (!res.ok) throw new Error("Gagal simpan");
+      if (!res.ok) throw new Error("Gagal simpan ke cloud");
       setSyncStatus('synced');
     } catch (e) {
+      console.error("Save error:", e);
       setSyncStatus('error');
     } finally {
       isSyncingRef.current = false;
@@ -203,7 +221,7 @@ const App = () => {
 
   useEffect(() => {
     if (isGuest || isAdmin) {
-      fetchFromCloud();
+      fetchFromCloud(true); // Paksa fetch saat awal login/refresh
       const interval = setInterval(() => fetchFromCloud(), 20000);
       return () => clearInterval(interval);
     }
@@ -224,9 +242,6 @@ const App = () => {
     saveToCloud(newAlbums);
   };
 
-  /**
-   * Fix: Implement navigateLightbox function to handle image navigation in the cosmic viewer.
-   */
   const navigateLightbox = (direction: 'next' | 'prev') => {
     if (selectedPhotoIndex === null || !activeAlbum) return;
     if (direction === 'next') {
@@ -341,10 +356,6 @@ const App = () => {
     setNewComment('');
   };
 
-  /**
-   * Fix: Updated generateContent parameters to follow the correct structure and use the 'gemini-3-flash-preview' model.
-   * Also addressed the Blob type collision by casting the inlineData part appropriately.
-   */
   const generateAICaption = async (index: number) => {
     if (!isAdmin || !activeAlbum || isAnalyzing) return;
     setIsAnalyzing(true);
@@ -352,11 +363,18 @@ const App = () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const photo = activeAlbum.photos[index];
       const base64Data = photo.url.split(',')[1] || "";
+      // FIX: Use gemini-3-pro-preview for advanced reasoning tasks and cast the inlineData part to any 
+      // to resolve the TypeScript error caused by name collision with the browser's global Blob type.
       const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3-pro-preview',
         contents: {
           parts: [
-            { inlineData: { mimeType: 'image/jpeg', data: base64Data } as any },
+            { 
+              inlineData: { 
+                mimeType: 'image/jpeg', 
+                data: base64Data 
+              } 
+            } as any,
             { text: "Berikan satu kalimat puitis pendek dalam Bahasa Indonesia bertema angkasa atau keabadian untuk foto ini." }
           ]
         },
@@ -381,7 +399,7 @@ const App = () => {
     setShowModal({show: true, type: 'gate'});
   };
 
-  if (!isGuest && !isAdmin && showModal.type === 'gate') {
+  if (!isGuest && !isAdmin && showModal.show && showModal.type === 'gate') {
     return (
       <div className="fixed inset-0 flex items-center justify-center p-6">
         <SpaceBackground />
@@ -422,7 +440,6 @@ const App = () => {
     <div className="min-h-screen relative overflow-x-hidden">
       <SpaceBackground />
       
-      {/* Dynamic Navigation Bar */}
       <header className="sticky top-0 z-40 bg-black/40 backdrop-blur-3xl border-b border-white/10 px-4 sm:px-12 py-5 shadow-2xl">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
           <div className="flex items-center gap-5 cursor-pointer group" onClick={() => setCurrentView('home')}>
@@ -665,7 +682,7 @@ const App = () => {
         </div>
       )}
 
-      {/* Global Modals - Cosmic Styled */}
+      {/* Global Modals */}
       {showModal.show && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/90 backdrop-blur-2xl animate-in fade-in duration-500">
           <SpaceBackground />
