@@ -12,12 +12,12 @@ import {
   Key,
   Send,
   Rocket,
-  Cloud,
   Zap,
   Sun,
   Loader2,
   Sparkles,
-  Trash2
+  Trash2,
+  AlertCircle
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 
@@ -54,7 +54,7 @@ interface AlbumMetadata {
 }
 
 // --- Database Config (KVDB) ---
-// Gunakan BUCKET_ID yang unik untuk penyimpanan data Anda
+// Gunakan BUCKET_ID yang unik. Jika ingin data baru yang bersih, ganti v6 ke v7
 const BUCKET_ID = 'vault_memoria_hp_secure_v6'; 
 const BASE_URL = `https://kvdb.io/6EExiY7S4Gv2S8w6L6w3m7/${BUCKET_ID}`;
 const INDEX_KEY = 'album_main_index';
@@ -103,18 +103,22 @@ const uploadToCloudinary = async (file: File): Promise<string> => {
   formData.append('file', file);
   formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
 
-  const response = await fetch(
-    `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
-    { method: 'POST', body: formData }
-  );
+  try {
+    const response = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+      { method: 'POST', body: formData }
+    );
 
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData.error?.message || 'Gagal mengupload foto.');
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error?.message || 'Gagal mengupload ke Cloudinary. Pastikan Preset "galeri_upload" sudah diset ke Unsigned.');
+    }
+
+    const data = await response.json();
+    return data.secure_url;
+  } catch (err: any) {
+    throw new Error(err.message || 'Koneksi internet bermasalah saat upload.');
   }
-
-  const data = await response.json();
-  return data.secure_url;
 };
 
 const App = () => {
@@ -145,6 +149,7 @@ const App = () => {
   const [isAIScribing, setIsAIScribing] = useState(false);
   const [newComment, setNewComment] = useState('');
 
+  // SINKRONISASI GLOBAL: Mengambil data terbaru dari server agar orang lain bisa melihat
   const fetchIndex = useCallback(async (silent = false) => {
     if (!silent) setIsSyncing(true);
     try {
@@ -157,17 +162,17 @@ const App = () => {
           hasCheckedServer.current = true;
         }
       } else if (res.status === 404) {
+        // Jika belum ada data sama sekali di server
         hasCheckedServer.current = true;
       }
     } catch (e) {
-      console.warn("Gagal sinkronisasi data.");
+      console.warn("Gagal sinkronisasi data dari server.");
     } finally {
       if (!silent) setIsSyncing(false);
     }
   }, []);
 
   const saveIndex = async (data: AlbumMetadata[]) => {
-    if (!hasCheckedServer.current) return;
     setIsSyncing(true);
     try {
       setAlbums(data);
@@ -178,7 +183,7 @@ const App = () => {
         headers: { 'Content-Type': 'application/json' }
       });
     } catch (e) {
-      console.error("Gagal simpan online.");
+      alert("Gagal menyimpan ke database online. Coba lagi.");
     } finally {
       setIsSyncing(false);
     }
@@ -211,13 +216,14 @@ const App = () => {
       });
       if (res.ok) {
         setActivePhotos(photos);
+        // Update jumlah foto di index utama
         const nextIndex = albums.map(a => 
           a.id === albumId ? { ...a, photoCount: photos.length } : a
         );
         await saveIndex(nextIndex);
       }
     } catch (e) {
-      alert("Gagal menyimpan perubahan.");
+      alert("Gagal mengupdate database online.");
     } finally {
       setIsSyncing(false);
     }
@@ -251,7 +257,7 @@ const App = () => {
       const next = activePhotos.map(p => p.id === photo.id ? { ...p, caption } : p);
       await saveAlbumPhotos(activeAlbumId, next);
     } catch (e) {
-      alert("AI sedang istirahat. Coba lagi nanti.");
+      alert("AI gagal memproses. Pastikan API_KEY sudah diset di Vercel.");
     } finally {
       setIsAIScribing(false);
     }
@@ -274,16 +280,17 @@ const App = () => {
       }));
       await saveAlbumPhotos(activeAlbumId, [...newPhotos, ...activePhotos]);
     } catch (err: any) {
-      alert(err.message);
+      alert("Upload Gagal: " + err.message);
     } finally {
       setIsUploading(false);
+      e.target.value = ''; // Reset input file
     }
   };
 
   const handleDeleteAlbum = async (albumId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!isAdmin) return;
-    if (!confirm("Hapus album ini beserta seluruh fotonya secara permanen?")) return;
+    if (!confirm("Hapus album ini secara permanen dari semua perangkat?")) return;
     const next = albums.filter(a => a.id !== albumId);
     await saveIndex(next);
   };
@@ -307,7 +314,7 @@ const App = () => {
       setUserName(val);
       sessionStorage.setItem('userName_v6', val);
       setShowModal({ show: false, type: 'gate' });
-      fetchIndex();
+      fetchIndex(); // Tarik data saat masuk
     }
   };
 
@@ -320,7 +327,7 @@ const App = () => {
       sessionStorage.setItem('isAdmin_v6', 'true');
       sessionStorage.setItem('userName_v6', name);
       setShowModal({ show: false, type: 'gate' });
-      fetchIndex();
+      fetchIndex(); // Tarik data saat masuk
     } else {
       alert("Kode Sandi Salah.");
     }
@@ -376,6 +383,7 @@ const App = () => {
             <input autoFocus type="text" value={inputVal} onChange={(e) => setInputVal(e.target.value)} placeholder="Tulis namamu..." className="w-full px-8 py-5 bg-white/50 border border-sky-100 rounded-[2rem] outline-none text-center font-bold text-sky-900 placeholder:text-sky-300 text-lg" />
             <button type="submit" className="w-full py-5 bg-sky-500 text-white font-black rounded-[2rem] shadow-xl hover:bg-sky-600 active:scale-95 transition-all flex items-center justify-center gap-3"><Zap className="w-4 h-4" /> Masuk ke Album</button>
           </form>
+          <p className="text-[10px] text-white/50 font-bold uppercase tracking-widest">Gunakan nama Admin untuk mengelola foto</p>
         </div>
       </div>
     );
@@ -389,11 +397,15 @@ const App = () => {
           <div className="flex w-full justify-between items-center">
             <div className="flex items-center gap-4 cursor-pointer" onClick={() => {setCurrentView('home'); setActiveAlbumId(null);}}>
               <div className="bg-sky-500 p-2.5 rounded-2xl text-white shadow-lg"><Rocket className="w-5 h-5" /></div>
-              <h1 className="text-lg font-serif font-black tracking-tight">Memoria</h1>
+              <h1 className="text-lg font-serif font-black tracking-tight text-sky-700">Memoria</h1>
             </div>
             <div className="flex items-center gap-2">
-               <button onClick={() => fetchIndex()} className={`p-2.5 text-sky-400 ${isSyncing ? 'animate-spin' : ''}`}><RefreshCw className="w-5 h-5" /></button>
-               <button onClick={() => { sessionStorage.clear(); window.location.reload(); }} className="p-2.5 text-red-400"><LogOut className="w-5 h-5" /></button>
+               <button onClick={() => fetchIndex()} className={`p-2.5 text-sky-400 ${isSyncing ? 'animate-spin' : ''}`} title="Sinkronkan data">
+                 <RefreshCw className="w-5 h-5" />
+               </button>
+               <button onClick={() => { sessionStorage.clear(); window.location.reload(); }} className="p-2.5 text-red-400" title="Keluar">
+                 <LogOut className="w-5 h-5" />
+               </button>
             </div>
           </div>
           
@@ -403,7 +415,9 @@ const App = () => {
           </div>
 
           <div className="flex items-center gap-2 overflow-x-auto w-full pb-1 no-scrollbar">
-             <span className="text-[10px] font-black px-3 py-1.5 bg-sky-500 text-white rounded-full whitespace-nowrap">{isAdmin ? 'Admin' : 'Tamu'}: {userName}</span>
+             <span className="text-[10px] font-black px-3 py-1.5 bg-sky-500 text-white rounded-full whitespace-nowrap shadow-md">
+               {isAdmin ? 'Admin' : 'Tamu'}: {userName}
+             </span>
              {currentView === 'home' && isAdmin && (
                 <button onClick={() => { setInputVal(''); setShowModal({show: true, type: 'create'}); }} className="flex items-center gap-2 bg-white text-sky-600 border border-sky-100 px-4 py-1.5 rounded-full text-[10px] font-black shadow-sm uppercase whitespace-nowrap"><Plus className="w-3 h-3" /> Buat Album Baru</button>
              )}
@@ -430,7 +444,7 @@ const App = () => {
                   <div key={album.id} onClick={() => { setActiveAlbumId(album.id); setCurrentView('album'); fetchAlbumPhotos(album.id); }} className="group relative bg-white/70 backdrop-blur-3xl rounded-[2.5rem] overflow-hidden shadow-xl border border-white active:scale-95 transition-all">
                     <div className="aspect-[4/5] bg-sky-50 relative flex items-center justify-center text-sky-200">
                       <ImageIcon className="w-12 h-12 opacity-20" />
-                      <div className="absolute top-4 left-4"><div className="bg-sky-500 text-white px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest">{album.photoCount} Momen</div></div>
+                      <div className="absolute top-4 left-4"><div className="bg-sky-500 text-white px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest shadow-md">{album.photoCount} Momen</div></div>
                       {isAdmin && (
                         <button onClick={(e) => handleDeleteAlbum(album.id, e)} className="absolute top-4 right-4 p-2.5 bg-red-100 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all"><Trash2 className="w-4 h-4" /></button>
                       )}
@@ -445,7 +459,7 @@ const App = () => {
           <div className="space-y-10 animate-in fade-in">
             <div className="flex flex-col gap-6 items-center border-b border-white/60 pb-10">
               <div className="flex items-center gap-6 w-full">
-                <button onClick={() => setCurrentView('home')} className="p-4 bg-white rounded-2xl text-sky-600 shadow-lg"><ArrowLeft className="w-6 h-6" /></button>
+                <button onClick={() => setCurrentView('home')} className="p-4 bg-white rounded-2xl text-sky-600 shadow-lg active:scale-90"><ArrowLeft className="w-6 h-6" /></button>
                 <h2 className="text-3xl font-serif font-black tracking-tighter text-white drop-shadow-lg truncate flex-1">{albums.find(a => a.id === activeAlbumId)?.name}</h2>
               </div>
               {isAdmin && (
@@ -465,13 +479,16 @@ const App = () => {
                     <img src={photo.url} loading="lazy" className="w-full h-auto" />
                   </div>
                 ))}
+                {activePhotos.length === 0 && (
+                  <div className="col-span-full py-10 text-center text-white opacity-50 font-bold uppercase text-[10px] tracking-widest">Belum ada foto.</div>
+                )}
               </div>
             )}
           </div>
         )}
       </main>
 
-      {/* Viewer Detail Foto (Lengkap dengan Tombol Hapus) */}
+      {/* Viewer Detail Foto */}
       {selectedPhotoIndex !== null && activePhotos[selectedPhotoIndex] && (
         <div className="fixed inset-0 z-[60] bg-sky-900/60 backdrop-blur-3xl flex flex-col animate-in fade-in">
            <button onClick={() => setSelectedPhotoIndex(null)} className="absolute top-6 right-6 z-[70] p-4 bg-white rounded-2xl shadow-2xl active:scale-90"><X className="w-6 h-6" /></button>
@@ -489,7 +506,6 @@ const App = () => {
                       <h3 className="font-serif font-black text-lg text-sky-900">{new Date(activePhotos[selectedPhotoIndex].timestamp).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</h3>
                     </div>
                  </div>
-                 {/* TOMBOL HAPUS FOTO UNTUK ADMIN */}
                  {isAdmin && (
                    <button onClick={handleDeletePhoto} className="p-4 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all active:scale-90">
                      <Trash2 className="w-5 h-5" />
@@ -521,7 +537,7 @@ const App = () => {
               </div>
 
               <div className="flex gap-3 mt-auto pt-2">
-                 <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addComment()} placeholder="Tulis sesuatu..." className="flex-1 px-5 py-4 bg-sky-50 border border-sky-100 rounded-2xl outline-none text-xs" />
+                 <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addComment()} placeholder="Tulis pesan..." className="flex-1 px-5 py-4 bg-sky-50 border border-sky-100 rounded-2xl outline-none text-xs" />
                  <button onClick={addComment} className="p-4 bg-sky-500 text-white rounded-2xl shadow-xl active:scale-90"><Send className="w-4 h-4" /></button>
               </div>
            </div>
