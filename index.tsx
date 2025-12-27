@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { 
   Plus, 
@@ -17,7 +17,7 @@ import {
   Sun,
   Loader2,
   Sparkles,
-  Info
+  Trash2
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 
@@ -44,21 +44,20 @@ interface Photo {
   caption?: string;
   author?: string;
   comments?: Comment[];
-  deletedAt?: number;
 }
 
 interface AlbumMetadata {
   id: string;
   name: string;
   createdAt: number;
-  deletedAt?: number;
   photoCount: number;
 }
 
 // --- Database Config (KVDB) ---
-const BUCKET_ID = 'memoria_vault_cloudinary_final_v1';
+// Gunakan BUCKET_ID yang unik untuk penyimpanan data Anda
+const BUCKET_ID = 'vault_memoria_hp_secure_v6'; 
 const BASE_URL = `https://kvdb.io/6EExiY7S4Gv2S8w6L6w3m7/${BUCKET_ID}`;
-const INDEX_KEY = 'album_index';
+const INDEX_KEY = 'album_main_index';
 const ADMIN_PASSWORD = "12345"; 
 const ADMIN_NAMES = ["Kevin", "Anakemas", "XiaobeBee0"];
 
@@ -111,7 +110,7 @@ const uploadToCloudinary = async (file: File): Promise<string> => {
 
   if (!response.ok) {
     const errorData = await response.json();
-    throw new Error(errorData.error?.message || 'Upload Gagal. Pastikan Preset bersifat Unsigned di Cloudinary.');
+    throw new Error(errorData.error?.message || 'Gagal mengupload foto.');
   }
 
   const data = await response.json();
@@ -119,16 +118,22 @@ const uploadToCloudinary = async (file: File): Promise<string> => {
 };
 
 const App = () => {
-  const [albums, setAlbums] = useState<AlbumMetadata[]>([]);
+  const [albums, setAlbums] = useState<AlbumMetadata[]>(() => {
+    const saved = localStorage.getItem('memoria_cache_v6');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [activePhotos, setActivePhotos] = useState<Photo[]>([]);
   const [currentView, setCurrentView] = useState<'home' | 'album'>('home');
   const [activeAlbumId, setActiveAlbumId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   
-  const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem('isMemoriaAdmin') === 'true');
-  const [guestName, setGuestName] = useState(() => sessionStorage.getItem('memoriaGuestName') || '');
+  const hasCheckedServer = useRef(false);
+
+  const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem('isAdmin_v6') === 'true');
+  const [userName, setUserName] = useState(() => sessionStorage.getItem('userName_v6') || '');
   const [showModal, setShowModal] = useState<{show: boolean, type: 'create' | 'login' | 'gate'}>({ 
-    show: !sessionStorage.getItem('memoriaGuestName'), 
+    show: !sessionStorage.getItem('userName_v6'), 
     type: 'gate' 
   });
 
@@ -140,24 +145,42 @@ const App = () => {
   const [isAIScribing, setIsAIScribing] = useState(false);
   const [newComment, setNewComment] = useState('');
 
-  const fetchIndex = useCallback(async () => {
+  const fetchIndex = useCallback(async (silent = false) => {
+    if (!silent) setIsSyncing(true);
     try {
       const res = await fetch(`${BASE_URL}/${INDEX_KEY}?t=${Date.now()}`, { cache: 'no-store' });
       if (res.ok) {
-        const data = await res.json() as AlbumMetadata[];
-        setAlbums(Array.isArray(data) ? data : []);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setAlbums(data);
+          localStorage.setItem('memoria_cache_v6', JSON.stringify(data));
+          hasCheckedServer.current = true;
+        }
+      } else if (res.status === 404) {
+        hasCheckedServer.current = true;
       }
     } catch (e) {
-      console.error("Sync error");
+      console.warn("Gagal sinkronisasi data.");
+    } finally {
+      if (!silent) setIsSyncing(false);
     }
   }, []);
 
   const saveIndex = async (data: AlbumMetadata[]) => {
+    if (!hasCheckedServer.current) return;
+    setIsSyncing(true);
     try {
-      await fetch(`${BASE_URL}/${INDEX_KEY}`, { method: 'POST', body: JSON.stringify(data) });
       setAlbums(data);
+      localStorage.setItem('memoria_cache_v6', JSON.stringify(data));
+      await fetch(`${BASE_URL}/${INDEX_KEY}`, { 
+        method: 'POST', 
+        body: JSON.stringify(data),
+        headers: { 'Content-Type': 'application/json' }
+      });
     } catch (e) {
-      alert("Gagal sinkronisasi data.");
+      console.error("Gagal simpan online.");
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -166,24 +189,37 @@ const App = () => {
     try {
       const res = await fetch(`${BASE_URL}/photos_${albumId}?t=${Date.now()}`, { cache: 'no-store' });
       if (res.ok) {
-        const data = await res.json() as Photo[];
+        const data = await res.json();
         setActivePhotos(Array.isArray(data) ? data : []);
+      } else {
+        setActivePhotos([]);
       }
     } catch (e) {
-      alert("Gagal memuat foto.");
+      setActivePhotos([]);
     } finally {
       setIsLoading(false);
     }
   };
 
   const saveAlbumPhotos = async (albumId: string, photos: Photo[]) => {
+    setIsSyncing(true);
     try {
-      await fetch(`${BASE_URL}/photos_${albumId}`, { method: 'POST', body: JSON.stringify(photos) });
-      setActivePhotos(photos);
-      const newIndex = albums.map(a => a.id === albumId ? { ...a, photoCount: photos.filter(p => !p.deletedAt).length } : a);
-      saveIndex(newIndex);
+      const res = await fetch(`${BASE_URL}/photos_${albumId}`, { 
+        method: 'POST', 
+        body: JSON.stringify(photos),
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        setActivePhotos(photos);
+        const nextIndex = albums.map(a => 
+          a.id === albumId ? { ...a, photoCount: photos.length } : a
+        );
+        await saveIndex(nextIndex);
+      }
     } catch (e) {
-      alert("Penyimpanan gagal.");
+      alert("Gagal menyimpan perubahan.");
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -205,17 +241,17 @@ const App = () => {
         model: 'gemini-3-flash-preview',
         contents: [{
           parts: [
-            { text: "Berikan satu kutipan puitis singkat tentang foto ini dalam Bahasa Indonesia. Maksimal 12 kata. Gaya bahasa hangat." },
+            { text: "Berikan 1 kutipan pendek puitis dalam Bahasa Indonesia (maks 10 kata) untuk foto ini. Gunakan kata yang emosional." },
             { inlineData: { mimeType: 'image/jpeg', data: base64Data } }
           ]
         }]
       });
 
-      const caption = response.text || "Momen berharga yang terabadikan.";
+      const caption = response.text || "Momen abadi dalam cakrawala.";
       const next = activePhotos.map(p => p.id === photo.id ? { ...p, caption } : p);
       await saveAlbumPhotos(activeAlbumId, next);
     } catch (e) {
-      alert("AI sedang sibuk. Coba beberapa saat lagi.");
+      alert("AI sedang istirahat. Coba lagi nanti.");
     } finally {
       setIsAIScribing(false);
     }
@@ -229,30 +265,47 @@ const App = () => {
       const newPhotos = await Promise.all(files.map(async file => {
         const url = await uploadToCloudinary(file);
         return { 
-          id: Math.random().toString(36).substr(2, 9), 
+          id: Math.random().toString(36).substr(2, 12), 
           url, 
           timestamp: Date.now(), 
-          author: guestName,
+          author: userName,
           comments: []
         } as Photo;
       }));
       await saveAlbumPhotos(activeAlbumId, [...newPhotos, ...activePhotos]);
     } catch (err: any) {
-      alert(`Gagal Upload: ${err.message}`);
+      alert(err.message);
     } finally {
       setIsUploading(false);
     }
   };
 
+  const handleDeleteAlbum = async (albumId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!isAdmin) return;
+    if (!confirm("Hapus album ini beserta seluruh fotonya secara permanen?")) return;
+    const next = albums.filter(a => a.id !== albumId);
+    await saveIndex(next);
+  };
+
+  const handleDeletePhoto = async () => {
+    if (!isAdmin || selectedPhotoIndex === null || !activeAlbumId) return;
+    if (!confirm("Hapus foto ini dari album?")) return;
+    const photoToDelete = activePhotos[selectedPhotoIndex];
+    const next = activePhotos.filter(p => p.id !== photoToDelete.id);
+    await saveAlbumPhotos(activeAlbumId, next);
+    setSelectedPhotoIndex(null);
+  };
+
   const handleGate = (e: React.FormEvent) => {
     e.preventDefault();
     const val = inputVal.trim();
-    if (val.length < 3) return alert("Nama minimal 3 huruf.");
+    if (val.length < 2) return alert("Siapa nama Anda?");
     if (ADMIN_NAMES.map(n => n.toLowerCase()).includes(val.toLowerCase())) {
       setShowModal({ show: true, type: 'login' });
     } else {
-      setGuestName(val);
-      sessionStorage.setItem('memoriaGuestName', val);
+      setUserName(val);
+      sessionStorage.setItem('userName_v6', val);
       setShowModal({ show: false, type: 'gate' });
       fetchIndex();
     }
@@ -262,25 +315,28 @@ const App = () => {
     e.preventDefault();
     if (inputVal === ADMIN_PASSWORD) {
       setIsAdmin(true);
-      setGuestName(nameInput);
-      sessionStorage.setItem('isMemoriaAdmin', 'true');
-      sessionStorage.setItem('memoriaGuestName', nameInput);
+      const name = nameInput || "Admin";
+      setUserName(name);
+      sessionStorage.setItem('isAdmin_v6', 'true');
+      sessionStorage.setItem('userName_v6', name);
       setShowModal({ show: false, type: 'gate' });
       fetchIndex();
     } else {
-      alert("Password salah.");
+      alert("Kode Sandi Salah.");
     }
   };
 
   const handleCreateAlbum = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!inputVal.trim()) return;
     const newAlbum: AlbumMetadata = {
       id: Date.now().toString(),
       name: inputVal,
       createdAt: Date.now(),
       photoCount: 0
     };
-    await saveIndex([newAlbum, ...albums]);
+    const next = [newAlbum, ...albums];
+    await saveIndex(next);
     await saveAlbumPhotos(newAlbum.id, []);
     setInputVal('');
     setShowModal({ show: false, type: 'gate' });
@@ -291,7 +347,7 @@ const App = () => {
     const photo = activePhotos[selectedPhotoIndex];
     const comment: Comment = {
       id: Date.now().toString(),
-      author: guestName,
+      author: userName,
       text: newComment,
       timestamp: Date.now()
     };
@@ -301,30 +357,24 @@ const App = () => {
   };
 
   useEffect(() => {
-    fetchIndex();
+    fetchIndex(true);
   }, [fetchIndex]);
 
   if (showModal.show && showModal.type === 'gate') {
     return (
-      <div className="fixed inset-0 flex items-center justify-center p-6 bg-sky-600">
+      <div className="fixed inset-0 flex items-center justify-center p-6 bg-sky-500">
         <SkyBackground />
-        <div className="w-full max-w-md space-y-12 text-center z-10 animate-in fade-in zoom-in duration-700">
+        <div className="w-full max-w-md space-y-12 text-center z-10 animate-in fade-in zoom-in">
           <div className="mx-auto bg-white/40 backdrop-blur-3xl border border-white/60 w-24 h-24 rounded-[3rem] shadow-2xl flex items-center justify-center animate-rocket">
             <Rocket className="w-10 h-10 text-sky-600" />
           </div>
           <div className="space-y-4">
-            <h1 className="text-6xl font-serif font-black text-white tracking-tighter drop-shadow-2xl">Memoria Vault</h1>
-            <p className="text-xs text-white/70 font-black uppercase tracking-[0.5em]">Cloud Storage Optimized</p>
+            <h1 className="text-5xl font-serif font-black text-white drop-shadow-2xl">Memoria Vault</h1>
+            <p className="text-[10px] text-white/70 font-black uppercase tracking-[0.3em]">Brankas Kenangan Digital</p>
           </div>
-          <form onSubmit={handleGate} className="p-10 bg-white/80 backdrop-blur-3xl border border-white rounded-[3.5rem] shadow-2xl space-y-6">
-            <input 
-              autoFocus type="text" value={inputVal} onChange={(e) => setInputVal(e.target.value)}
-              placeholder="Siapa namamu?"
-              className="w-full px-8 py-5 bg-white/50 border border-sky-100 rounded-[2rem] outline-none text-center font-bold text-sky-900 placeholder:text-sky-300 transition-all text-lg"
-            />
-            <button type="submit" className="w-full py-5 bg-sky-500 text-white font-black rounded-[2rem] shadow-xl hover:bg-sky-600 active:scale-95 transition-all uppercase tracking-widest text-xs flex items-center justify-center gap-3">
-              <Zap className="w-4 h-4" /> Buka Vault
-            </button>
+          <form onSubmit={handleGate} className="p-8 bg-white/90 backdrop-blur-3xl border border-white rounded-[3rem] shadow-2xl space-y-6">
+            <input autoFocus type="text" value={inputVal} onChange={(e) => setInputVal(e.target.value)} placeholder="Tulis namamu..." className="w-full px-8 py-5 bg-white/50 border border-sky-100 rounded-[2rem] outline-none text-center font-bold text-sky-900 placeholder:text-sky-300 text-lg" />
+            <button type="submit" className="w-full py-5 bg-sky-500 text-white font-black rounded-[2rem] shadow-xl hover:bg-sky-600 active:scale-95 transition-all flex items-center justify-center gap-3"><Zap className="w-4 h-4" /> Masuk ke Album</button>
           </form>
         </div>
       </div>
@@ -332,104 +382,87 @@ const App = () => {
   }
 
   return (
-    <div className="min-h-screen relative overflow-x-hidden text-sky-900 selection:bg-sky-200 pb-20">
+    <div className="min-h-screen relative overflow-x-hidden text-sky-900 pb-32">
       <SkyBackground />
-      
-      <header className="sticky top-0 z-40 bg-white/30 backdrop-blur-2xl border-b border-white/60 px-4 sm:px-12 py-5 shadow-sm">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
-          <div className="flex items-center gap-5 cursor-pointer group" onClick={() => {setCurrentView('home'); setActiveAlbumId(null);}}>
-            <div className="bg-sky-500 p-3 rounded-2xl text-white shadow-lg group-hover:scale-110 transition-transform"><Rocket className="w-6 h-6" /></div>
-            <div>
-              <h1 className="text-xl font-serif font-black tracking-tight">Memoria Vault</h1>
-              <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${isAdmin ? 'bg-sky-500 text-white' : 'bg-white/60 text-sky-600 border-sky-200'}`}>
-                {isAdmin ? 'Admin' : 'User'}: {guestName}
-              </span>
+      <header className="sticky top-0 z-40 bg-white/40 backdrop-blur-3xl border-b border-white/60 px-4 py-5 shadow-sm">
+        <div className="max-w-7xl mx-auto flex flex-col gap-5 items-center">
+          <div className="flex w-full justify-between items-center">
+            <div className="flex items-center gap-4 cursor-pointer" onClick={() => {setCurrentView('home'); setActiveAlbumId(null);}}>
+              <div className="bg-sky-500 p-2.5 rounded-2xl text-white shadow-lg"><Rocket className="w-5 h-5" /></div>
+              <h1 className="text-lg font-serif font-black tracking-tight">Memoria</h1>
+            </div>
+            <div className="flex items-center gap-2">
+               <button onClick={() => fetchIndex()} className={`p-2.5 text-sky-400 ${isSyncing ? 'animate-spin' : ''}`}><RefreshCw className="w-5 h-5" /></button>
+               <button onClick={() => { sessionStorage.clear(); window.location.reload(); }} className="p-2.5 text-red-400"><LogOut className="w-5 h-5" /></button>
             </div>
           </div>
           
-          <div className="flex-1 max-w-xl w-full relative">
-            <Search className="absolute left-5 top-1/2 -translate-y-1/2 w-4 h-4 text-sky-400" />
-            <input 
-              type="text" placeholder="Cari Koleksi Album..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-12 pr-6 py-3.5 bg-white/40 border border-white/60 rounded-2xl outline-none text-sm placeholder:text-sky-300 shadow-inner"
-            />
+          <div className="w-full relative">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-sky-400" />
+            <input type="text" placeholder="Cari kenangan..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-5 py-3 bg-white/60 border border-white/60 rounded-2xl outline-none text-sm shadow-inner" />
           </div>
 
-          <div className="flex items-center gap-4">
-            <button onClick={() => { sessionStorage.clear(); window.location.reload(); }} className="p-3 text-red-400 hover:bg-red-50 rounded-2xl transition-colors"><LogOut className="w-5 h-5" /></button>
-            {currentView === 'home' && isAdmin && (
-              <button onClick={() => { setInputVal(''); setShowModal({show: true, type: 'create'}); }} className="flex items-center gap-3 bg-sky-500 text-white px-6 py-3.5 rounded-2xl shadow-lg font-black uppercase text-[10px] tracking-widest">
-                <Plus className="w-5 h-5" /> Album Baru
-              </button>
-            )}
+          <div className="flex items-center gap-2 overflow-x-auto w-full pb-1 no-scrollbar">
+             <span className="text-[10px] font-black px-3 py-1.5 bg-sky-500 text-white rounded-full whitespace-nowrap">{isAdmin ? 'Admin' : 'Tamu'}: {userName}</span>
+             {currentView === 'home' && isAdmin && (
+                <button onClick={() => { setInputVal(''); setShowModal({show: true, type: 'create'}); }} className="flex items-center gap-2 bg-white text-sky-600 border border-sky-100 px-4 py-1.5 rounded-full text-[10px] font-black shadow-sm uppercase whitespace-nowrap"><Plus className="w-3 h-3" /> Buat Album Baru</button>
+             )}
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 sm:p-12 relative z-10">
+      <main className="max-w-7xl mx-auto p-4 relative z-10">
         {currentView === 'home' ? (
-          <div className="space-y-16 animate-in fade-in duration-700">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 text-white drop-shadow-lg">
-              <div>
-                <h2 className="text-5xl font-serif font-black tracking-tighter">Cakrawala Memori</h2>
-                <p className="text-base font-medium opacity-80">Menyimpan kenangan dalam orbit Cloudinary.</p>
-              </div>
-              <div className="px-5 py-3 bg-white/20 rounded-2xl border border-white text-[10px] font-black uppercase tracking-widest flex items-center gap-3">
-                <Cloud className="w-4 h-4" /> {albums.filter(a => !a.deletedAt).length} Koleksi
-              </div>
+          <div className="space-y-12 animate-in fade-in">
+            <div className="px-2 text-white drop-shadow-lg">
+              <h2 className="text-4xl font-serif font-black tracking-tighter">Cakrawala Kita</h2>
+              <p className="text-sm font-medium opacity-80">Setiap album adalah satu cerita indah.</p>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-12">
-              {albums.filter(a => !a.deletedAt && a.name.toLowerCase().includes(searchTerm.toLowerCase())).map((album, idx) => (
-                <div 
-                  key={album.id} 
-                  onClick={() => { setActiveAlbumId(album.id); setCurrentView('album'); fetchAlbumPhotos(album.id); }} 
-                  className="group relative bg-white/70 backdrop-blur-3xl rounded-[3.5rem] overflow-hidden shadow-2xl border border-white transition-all cursor-pointer hover:border-sky-400 hover:-translate-y-4 animate-in fade-in slide-in-from-bottom duration-500"
-                  style={{ animationDelay: `${idx * 100}ms` }}
-                >
-                  <div className="aspect-[4/5] bg-sky-50 relative flex items-center justify-center text-sky-200">
-                    <ImageIcon className="w-20 h-20 opacity-20" />
-                    <div className="absolute top-6 left-6">
-                      <div className="bg-sky-500 text-white px-4 py-2 rounded-full text-[9px] font-black uppercase tracking-widest shadow-lg">{album.photoCount} Momen</div>
+            
+            {albums.length === 0 && !isSyncing ? (
+               <div className="py-20 text-center bg-white/30 backdrop-blur-xl rounded-[3rem] border border-white/40">
+                  <ImageIcon className="w-16 h-16 mx-auto text-white/40 mb-4" />
+                  <p className="text-white font-black uppercase tracking-widest text-[10px]">Belum ada album yang dibuat.</p>
+               </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                {albums.filter(a => a.name.toLowerCase().includes(searchTerm.toLowerCase())).map((album) => (
+                  <div key={album.id} onClick={() => { setActiveAlbumId(album.id); setCurrentView('album'); fetchAlbumPhotos(album.id); }} className="group relative bg-white/70 backdrop-blur-3xl rounded-[2.5rem] overflow-hidden shadow-xl border border-white active:scale-95 transition-all">
+                    <div className="aspect-[4/5] bg-sky-50 relative flex items-center justify-center text-sky-200">
+                      <ImageIcon className="w-12 h-12 opacity-20" />
+                      <div className="absolute top-4 left-4"><div className="bg-sky-500 text-white px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest">{album.photoCount} Momen</div></div>
+                      {isAdmin && (
+                        <button onClick={(e) => handleDeleteAlbum(album.id, e)} className="absolute top-4 right-4 p-2.5 bg-red-100 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all"><Trash2 className="w-4 h-4" /></button>
+                      )}
                     </div>
+                    <div className="p-5 text-center"><h3 className="font-serif font-black text-sm text-sky-900 truncate uppercase">{album.name}</h3></div>
                   </div>
-                  <div className="p-10 text-center">
-                    <h3 className="font-serif font-black text-xl text-sky-900 truncate uppercase tracking-tight">{album.name}</h3>
-                    <p className="text-[10px] text-sky-400 mt-3 font-black uppercase tracking-widest">Orbit {idx + 1}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
-          <div className="space-y-12 animate-in fade-in duration-500">
-            <div className="flex flex-col md:flex-row justify-between items-center gap-10 border-b border-white pb-16">
-              <div className="flex items-center gap-10">
-                <button onClick={() => setCurrentView('home')} className="p-5 bg-white border border-white rounded-[2rem] text-sky-600 hover:bg-sky-500 hover:text-white transition-all shadow-xl hover:scale-110 active:scale-90"><ArrowLeft className="w-8 h-8" /></button>
-                <h2 className="text-6xl font-serif font-black tracking-tighter text-white drop-shadow-lg">{albums.find(a => a.id === activeAlbumId)?.name}</h2>
+          <div className="space-y-10 animate-in fade-in">
+            <div className="flex flex-col gap-6 items-center border-b border-white/60 pb-10">
+              <div className="flex items-center gap-6 w-full">
+                <button onClick={() => setCurrentView('home')} className="p-4 bg-white rounded-2xl text-sky-600 shadow-lg"><ArrowLeft className="w-6 h-6" /></button>
+                <h2 className="text-3xl font-serif font-black tracking-tighter text-white drop-shadow-lg truncate flex-1">{albums.find(a => a.id === activeAlbumId)?.name}</h2>
               </div>
               {isAdmin && (
-                <label className={`cursor-pointer ${isUploading ? 'opacity-50 cursor-not-allowed' : 'bg-sky-500 hover:bg-sky-600'} text-white px-12 py-6 rounded-[2.5rem] flex items-center gap-5 transition-all shadow-2xl font-black text-xs uppercase tracking-widest min-w-[240px] justify-center`}>
-                  {isUploading ? <RefreshCw className="w-6 h-6 animate-spin" /> : <Plus className="w-6 h-6" />}
-                  {isUploading ? 'Menyimpan di Awan...' : 'Tambah Memori'}
+                <label className={`w-full cursor-pointer ${isUploading ? 'opacity-50' : 'bg-sky-500'} text-white py-4 rounded-2xl flex items-center justify-center gap-4 transition-all shadow-xl font-black text-xs uppercase tracking-widest`}>
+                  {isUploading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5" />} {isUploading ? 'Mengunggah...' : 'Tambah Foto Kenangan'}
                   <input type="file" accept="image/*" multiple className="hidden" onChange={handleAddPhotos} disabled={isUploading} />
                 </label>
               )}
             </div>
             
             {isLoading ? (
-              <div className="py-40 flex flex-col items-center justify-center text-white/50">
-                <Loader2 className="w-16 h-16 animate-spin mb-4" />
-                <p className="font-black uppercase tracking-widest text-xs">Membangun Jembatan Awan...</p>
-              </div>
+              <div className="py-20 flex flex-col items-center justify-center text-white/50"><Loader2 className="w-12 h-12 animate-spin mb-4" /><p className="font-black uppercase tracking-widest text-[9px]">Membuka Brankas...</p></div>
             ) : (
-              <div className="columns-2 sm:columns-3 lg:columns-4 gap-8 space-y-8">
-                {activePhotos.filter(p => !p.deletedAt).map((photo) => (
-                  <div key={photo.id} className="relative group break-inside-avoid bg-white/70 backdrop-blur-3xl rounded-[3rem] overflow-hidden shadow-2xl border border-white transition-all hover:border-sky-400 animate-in fade-in duration-700">
-                    <img src={photo.url} loading="lazy" className="w-full h-auto cursor-zoom-in group-hover:scale-[1.03] transition-all duration-700" onClick={() => setSelectedPhotoIndex(activePhotos.findIndex(p => p.id === photo.id))} />
-                    <div className="absolute inset-0 bg-gradient-to-t from-sky-900/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-all p-10 flex flex-col justify-end">
-                      <button onClick={() => setSelectedPhotoIndex(activePhotos.findIndex(p => p.id === photo.id))} className="w-full py-4 bg-white text-sky-900 rounded-2xl font-black text-[11px] uppercase tracking-widest shadow-2xl transform translate-y-4 group-hover:translate-y-0 transition-all">Lihat Memori</button>
-                    </div>
+              <div className="columns-2 gap-4 space-y-4">
+                {activePhotos.map((photo, idx) => (
+                  <div key={photo.id} className="relative group break-inside-avoid bg-white/80 backdrop-blur-3xl rounded-[2rem] overflow-hidden shadow-lg border border-white transition-all active:scale-95" onClick={() => setSelectedPhotoIndex(idx)}>
+                    <img src={photo.url} loading="lazy" className="w-full h-auto" />
                   </div>
                 ))}
               </div>
@@ -438,76 +471,83 @@ const App = () => {
         )}
       </main>
 
-      {/* Viewer */}
+      {/* Viewer Detail Foto (Lengkap dengan Tombol Hapus) */}
       {selectedPhotoIndex !== null && activePhotos[selectedPhotoIndex] && (
-        <div className="fixed inset-0 z-[60] bg-sky-900/40 backdrop-blur-[50px] flex flex-col md:flex-row animate-in fade-in duration-300">
-           <button onClick={() => setSelectedPhotoIndex(null)} className="absolute top-8 right-8 z-20 p-5 bg-white hover:bg-red-500 hover:text-white rounded-[2rem] shadow-2xl transition-all border border-white"><X className="w-6 h-6" /></button>
-           <div className="flex-1 flex items-center justify-center p-6 md:p-12">
-              <img src={activePhotos[selectedPhotoIndex].url} className="max-w-full max-h-full object-contain rounded-[3rem] shadow-2xl border-[8px] border-white/50" />
-           </div>
+        <div className="fixed inset-0 z-[60] bg-sky-900/60 backdrop-blur-3xl flex flex-col animate-in fade-in">
+           <button onClick={() => setSelectedPhotoIndex(null)} className="absolute top-6 right-6 z-[70] p-4 bg-white rounded-2xl shadow-2xl active:scale-90"><X className="w-6 h-6" /></button>
            
-           <div className="w-full md:w-[450px] bg-white/95 backdrop-blur-3xl border-l border-white/60 flex flex-col h-[60vh] md:h-full z-20 shadow-[-20px_0_60px_rgba(0,0,0,0.1)]">
-              <div className="p-10 border-b border-sky-50">
-                 <div className="flex items-center gap-5 mb-8">
-                    <div className="p-4 bg-sky-500 rounded-2xl text-white shadow-xl"><Rocket className="w-6 h-6" /></div>
+           <div className="flex-1 flex items-center justify-center p-4">
+             <img src={activePhotos[selectedPhotoIndex].url} className="max-w-full max-h-[55vh] object-contain rounded-[2rem] shadow-2xl border-4 border-white/50" />
+           </div>
+
+           <div className="w-full bg-white rounded-t-[3rem] p-8 space-y-6 shadow-2xl flex flex-col max-h-[60vh] overflow-hidden relative">
+              <div className="flex items-center justify-between border-b border-sky-50 pb-5">
+                 <div className="flex items-center gap-4">
+                    <div className="p-3 bg-sky-500 rounded-xl text-white"><Rocket className="w-5 h-5" /></div>
                     <div>
-                       <p className="text-[10px] font-black text-sky-400 uppercase tracking-widest">Post by {activePhotos[selectedPhotoIndex].author}</p>
-                       <h3 className="font-serif font-black text-2xl text-sky-900">{new Date(activePhotos[selectedPhotoIndex].timestamp).toLocaleDateString()}</h3>
+                      <p className="text-[9px] font-black text-sky-400 uppercase">Oleh: {activePhotos[selectedPhotoIndex].author}</p>
+                      <h3 className="font-serif font-black text-lg text-sky-900">{new Date(activePhotos[selectedPhotoIndex].timestamp).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</h3>
                     </div>
                  </div>
-                 <div className="relative p-8 bg-sky-50 rounded-[2.5rem] italic text-sky-900/70 text-base font-serif leading-relaxed shadow-inner">
-                   "{activePhotos[selectedPhotoIndex].caption || "Setiap gambar menyimpan ribuan kata."}"
-                   {isAdmin && (
-                     <button 
-                       onClick={generateAICaption}
-                       disabled={isAIScribing}
-                       className="absolute -bottom-4 -right-4 p-4 bg-sky-500 text-white rounded-2xl shadow-xl hover:bg-sky-600 transition-all hover:scale-110 disabled:bg-sky-300"
-                     >
-                       {isAIScribing ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />}
-                     </button>
-                   )}
-                 </div>
+                 {/* TOMBOL HAPUS FOTO UNTUK ADMIN */}
+                 {isAdmin && (
+                   <button onClick={handleDeletePhoto} className="p-4 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all active:scale-90">
+                     <Trash2 className="w-5 h-5" />
+                   </button>
+                 )}
               </div>
 
-              <div className="flex-1 overflow-y-auto p-10 space-y-8">
-                 {activePhotos[selectedPhotoIndex].comments?.map(c => (
-                    <div key={c.id} className="flex gap-5 animate-in slide-in-from-right">
-                       <div className="w-10 h-10 min-w-[40px] rounded-2xl bg-sky-100 flex items-center justify-center text-xs font-black text-sky-600 border border-sky-200">{c.author[0]}</div>
-                       <div className="flex-1 bg-white p-6 rounded-[2rem] rounded-tl-none border border-sky-50 shadow-sm">
-                          <p className="text-[11px] font-black text-sky-800 mb-1">{c.author}</p>
-                          <p className="text-sm text-sky-900/70">{c.text}</p>
-                       </div>
-                    </div>
-                 ))}
+              <div className="relative p-5 bg-sky-50 rounded-2xl italic text-sky-900/70 text-sm font-serif leading-relaxed">
+                 "{activePhotos[selectedPhotoIndex].caption || "Momen ini menceritakan ribuan kata tanpa bicara."}"
+                 {isAdmin && (
+                   <button onClick={generateAICaption} disabled={isAIScribing} className="absolute -bottom-2 -right-2 p-3 bg-sky-500 text-white rounded-xl shadow-lg active:scale-90 disabled:bg-sky-300 transition-all">
+                     {isAIScribing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                   </button>
+                 )}
               </div>
 
-              <div className="p-10 bg-sky-50 border-t border-sky-100 flex gap-4">
-                 <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addComment()} placeholder="Beri pesan..." className="flex-1 px-8 py-5 bg-white border border-sky-200 rounded-[1.5rem] outline-none text-sm shadow-inner" />
-                 <button onClick={addComment} className="p-5 bg-sky-500 text-white rounded-[1.5rem] shadow-xl hover:bg-sky-600 active:scale-95 transition-all"><Send className="w-5 h-5" /></button>
+              <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+                 {activePhotos[selectedPhotoIndex].comments?.length === 0 ? (<p className="text-center text-sky-300 text-[9px] font-black uppercase py-4">Belum ada pesan terkirim.</p>) : 
+                    (activePhotos[selectedPhotoIndex].comments?.map(c => (
+                        <div key={c.id} className="flex gap-3">
+                          <div className="w-8 h-8 min-w-[32px] rounded-lg bg-sky-100 flex items-center justify-center text-[10px] font-black text-sky-600 border border-sky-200 uppercase">{c.author[0]}</div>
+                          <div className="flex-1 bg-white p-4 rounded-2xl rounded-tl-none border border-sky-50 shadow-sm">
+                            <p className="text-[9px] font-black text-sky-800 mb-0.5">{c.author}</p>
+                            <p className="text-xs text-sky-900/70">{c.text}</p>
+                          </div>
+                        </div>
+                    )))
+                 }
+              </div>
+
+              <div className="flex gap-3 mt-auto pt-2">
+                 <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addComment()} placeholder="Tulis sesuatu..." className="flex-1 px-5 py-4 bg-sky-50 border border-sky-100 rounded-2xl outline-none text-xs" />
+                 <button onClick={addComment} className="p-4 bg-sky-500 text-white rounded-2xl shadow-xl active:scale-90"><Send className="w-4 h-4" /></button>
               </div>
            </div>
         </div>
       )}
 
-      {/* Admin Modals */}
+      {/* Modals Login & Create */}
       {showModal.show && showModal.type !== 'gate' && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-sky-900/30 backdrop-blur-2xl animate-in fade-in">
-           <div className="bg-white/95 backdrop-blur-3xl border border-white w-full max-w-md rounded-[4rem] shadow-2xl p-12 space-y-10">
-              <div className="flex items-center gap-6">
-                 <div className="p-5 bg-sky-500 text-white rounded-3xl shadow-xl"><Key className="w-8 h-8" /></div>
-                 <h3 className="text-3xl font-serif font-black text-sky-900 tracking-tighter">{showModal.type === 'login' ? 'Otorisasi Admin' : 'Album Baru'}</h3>
-              </div>
-              <form onSubmit={showModal.type === 'login' ? handleAdminLogin : handleCreateAlbum} className="space-y-8">
-                 {showModal.type === 'login' && (
-                    <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Nama Admin" className="w-full px-8 py-5 bg-white border border-sky-100 rounded-[2rem] font-bold text-sky-900 outline-none" />
-                 )}
-                 <input type={showModal.type === 'login' ? 'password' : 'text'} value={inputVal} onChange={(e) => setInputVal(e.target.value)} placeholder={showModal.type === 'login' ? 'Passcode' : 'Nama Album'} className="w-full px-8 py-5 bg-white border border-sky-100 rounded-[2rem] font-bold text-sky-900 outline-none shadow-inner" />
-                 <div className="flex flex-col gap-4">
-                    <button type="submit" className="w-full py-6 bg-sky-500 text-white font-black rounded-[2rem] shadow-2xl hover:bg-sky-600 uppercase text-xs tracking-widest transition-all">Konfirmasi</button>
-                    <button type="button" onClick={() => setShowModal({show: false, type: 'gate'})} className="text-sky-400 font-bold text-xs uppercase hover:text-sky-600">Batal</button>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-sky-900/40 backdrop-blur-2xl">
+           <div className="bg-white border border-white w-full max-w-sm rounded-[3rem] shadow-2xl p-10 space-y-8 animate-in zoom-in">
+              <div className="flex items-center gap-5"><div className="p-4 bg-sky-500 text-white rounded-2xl shadow-lg"><Key className="w-6 h-6" /></div><h3 className="text-2xl font-serif font-black text-sky-900">{showModal.type === 'login' ? 'Otorisasi Admin' : 'Album Baru'}</h3></div>
+              <form onSubmit={showModal.type === 'login' ? handleAdminLogin : handleCreateAlbum} className="space-y-6">
+                 {showModal.type === 'login' && (<input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Nama Anda" className="w-full px-6 py-4 bg-sky-50 border border-sky-100 rounded-2xl font-bold text-sky-900 outline-none" />)}
+                 <input type={showModal.type === 'login' ? 'password' : 'text'} value={inputVal} onChange={(e) => setInputVal(e.target.value)} placeholder={showModal.type === 'login' ? 'Passcode' : 'Nama Album'} className="w-full px-6 py-4 bg-sky-50 border border-sky-100 rounded-2xl font-bold text-sky-900 outline-none" />
+                 <div className="flex flex-col gap-3 pt-4">
+                    <button type="submit" className="w-full py-5 bg-sky-500 text-white font-black rounded-2xl shadow-xl active:scale-95 uppercase text-[10px] tracking-widest">{isSyncing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : 'Konfirmasi'}</button>
+                    <button type="button" onClick={() => setShowModal({show: false, type: 'gate'})} className="text-sky-400 font-bold text-[10px] uppercase text-center">Kembali</button>
                  </div>
               </form>
            </div>
+        </div>
+      )}
+
+      {isSyncing && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 px-6 py-3 bg-white/90 backdrop-blur-2xl border border-sky-100 rounded-full shadow-2xl flex items-center gap-3 animate-bounce">
+           <RefreshCw className="w-3 h-3 text-sky-500 animate-spin" /><span className="text-[9px] font-black uppercase tracking-widest text-sky-800">Sinkronisasi...</span>
         </div>
       )}
     </div>
