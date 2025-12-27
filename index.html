@@ -4,15 +4,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Memoria Vault - Cosmic Edition</title>
+  <title>Memoria Vault - Sky Edition</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&display=swap');
     
     body {
       font-family: 'Plus Jakarta Sans', sans-serif;
-      background-color: #020205;
-      color: white;
+      background-color: #7dd3fc;
+      color: #0f172a;
       overflow-x: hidden;
     }
     
@@ -20,41 +20,45 @@
       font-family: 'Playfair Display', serif;
     }
 
-    /* Custom Cosmic Scrollbar */
+    /* Custom Sky Scrollbar */
     ::-webkit-scrollbar {
       width: 6px;
     }
     ::-webkit-scrollbar-track {
-      background: #020205;
+      background: #bae6fd;
     }
     ::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.5);
       border-radius: 10px;
     }
     ::-webkit-scrollbar-thumb:hover {
-      background: rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.8);
     }
 
-    @keyframes float {
-      0% { transform: translateY(0px) rotate(45deg); }
-      50% { transform: translateY(-20px) rotate(50deg); }
-      100% { transform: translateY(0px) rotate(45deg); }
+    @keyframes cloudFloat {
+      0% { transform: translateX(-100px); opacity: 0; }
+      10% { opacity: 0.8; }
+      90% { opacity: 0.8; }
+      100% { transform: translateX(calc(100vw + 100px)); opacity: 0; }
     }
 
-    @keyframes twinkle {
-      0%, 100% { opacity: 0.3; transform: scale(1); }
-      50% { opacity: 1; transform: scale(1.2); }
-    }
-
-    .animate-float {
-      animation: float 10s ease-in-out infinite;
-    }
-
-    .star {
+    .cloud {
       position: absolute;
       background: white;
-      border-radius: 50%;
-      opacity: 0.5;
+      border-radius: 100px;
+      filter: blur(20px);
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    @keyframes rocketLaunch {
+      0% { transform: translateY(0) rotate(0deg); }
+      50% { transform: translateY(-10px) rotate(2deg); }
+      100% { transform: translateY(0) rotate(0deg); }
+    }
+
+    .animate-rocket {
+      animation: rocketLaunch 4s ease-in-out infinite;
     }
   </style>
 <script type="importmap">
